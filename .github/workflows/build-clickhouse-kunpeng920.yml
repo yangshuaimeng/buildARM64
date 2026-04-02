@@ -51,7 +51,7 @@ jobs:
         with:
           repository: 'ClickHouse/ClickHouse'
           ref: ${{ github.event.inputs.clickhouse_version }}
-          submodules: false
+          submodules: 'recursive'
           fetch-depth: 1
       
       - name: Create build script
@@ -69,10 +69,7 @@ jobs:
               libssl-dev zlib1g-dev \
               libicu-dev libreadline-dev \
               ccache curl wget
-          
-          echo "=== Initializing submodules (shallow clone) ==="
-          git config --global advice.detachedHead false
-          git submodule update --init --recursive --depth 1 --jobs 4
+        
           
           echo "=== Creating build directory ==="
           mkdir -p /build/output
