@@ -1,0 +1,20 @@
+# Build outputs
+build/
+*.tar.gz
+*.deb
+*.rpm
+
+# ClickHouse binaries
+clickhouse-server
+clickhouse-client
+clickhouse-local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
