@@ -4,9 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       clickhouse_version:
-        description: 'ClickHouse version to build'
+        description: 'ClickHouse version'
         required: true
         default: 'v24.3.13.40-lts'
+        type: choice
+        options:
+          - v24.3.13.40-lts
+          - v24.3.12.75-lts
+          - v24.3.11.48-lts
+          - v23.8.15.35-lts
       build_type:
         description: 'Build type'
         required: true
@@ -16,7 +22,7 @@ on:
           - Release
           - RelWithDebInfo
       compatibility_mode:
-        description: 'Compatibility mode for older ARM CPUs'
+        description: 'Compatibility mode'
         required: true
         default: 'safe'
         type: choice
@@ -27,167 +33,135 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 300
     
     steps:
       - name: Maximize build space
         run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force
+          echo "=== Disk space before ==="
           df -h
-
-      - name: Set up QEMU for ARM64
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          echo "=== Disk space after ==="
+          df -h
+      
+      - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
-
+      
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Checkout ClickHouse
+      
+      - name: Checkout ClickHouse with submodules
         uses: actions/checkout@v4
         with:
           repository: 'ClickHouse/ClickHouse'
           ref: ${{ github.event.inputs.clickhouse_version }}
-          submodules: false
+          submodules: recursive
           fetch-depth: 1
-
-      - name: Create build script
+      
+      - name: Create source tarball
         run: |
-          cat > build.sh << 'EOF'
-          #!/bin/bash
-          set -e
-          
-          echo "=== Installing dependencies ==="
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y \
-              git cmake ninja-build \
-              gcc g++ \
-              python3 python3-pip \
-              libssl-dev zlib1g-dev \
-              libicu-dev libreadline-dev \
-              ccache curl wget
-          
-          echo "=== Initializing submodules (shallow clone) ==="
-          git config --global advice.detachedHead false
-          git submodule update --init --recursive --depth 1 --jobs 4
-          
-          echo "=== Creating build directory ==="
-          mkdir -p /build/output
-          cd /build/ClickHouse
-          rm -rf build
-          mkdir build
-          cd build
-          
-          echo "=== Configuring CMake for Kunpeng920 ==="
-          if [ "$COMPAT_MODE" = "safe" ]; then
-            echo "Using SAFE compatibility mode (ARMv8.0-A baseline)"
-            CMAKE_FLAGS=(
-              -DCMAKE_BUILD_TYPE=$BUILD_TYPE
-              -DCMAKE_C_COMPILER=gcc
-              -DCMAKE_CXX_COMPILER=g++
-              -DENABLE_CLICKHOUSE_ALL=OFF
-              -DENABLE_CLICKHOUSE_SERVER=ON
-              -DENABLE_CLICKHOUSE_CLIENT=ON
-              -DENABLE_CLICKHOUSE_LOCAL=ON
-              -DARCH_NATIVE=OFF
-              -DNO_ARMV81_OR_HIGHER=1
-              -DCOMPILER_FLAGS="-march=armv8-a -mtune=generic"
-              -DENABLE_MULTITARGET_CODE=OFF
-              -DUSE_INTERNAL_SSL_LIBRARY=ON
-              -DUSE_STATIC_LIBRARIES=ON
-              -DCMAKE_INSTALL_PREFIX=/build/output
-              -GNinja
-            )
-          else
-            echo "Using OPTIMIZED mode (ARMv8.2-A with Kunpeng tuning)"
-            CMAKE_FLAGS=(
-              -DCMAKE_BUILD_TYPE=$BUILD_TYPE
-              -DCMAKE_C_COMPILER=gcc
-              -DCMAKE_CXX_COMPILER=g++
-              -DENABLE_CLICKHOUSE_ALL=OFF
-              -DENABLE_CLICKHOUSE_SERVER=ON
-              -DENABLE_CLICKHOUSE_CLIENT=ON
-              -DENABLE_CLICKHOUSE_LOCAL=ON
-              -DARCH_NATIVE=OFF
-              -DARM_MARCH="armv8.2-a"
-              -DCOMPILER_FLAGS="-march=armv8.2-a -mtune=tsv110"
-              -DUSE_INTERNAL_SSL_LIBRARY=ON
-              -DUSE_STATIC_LIBRARIES=ON
-              -DCMAKE_INSTALL_PREFIX=/build/output
-              -GNinja
-            )
-          fi
-          
-          cmake .. "${CMAKE_FLAGS[@]}"
-          
-          echo "=== Building ClickHouse (this may take 1-2 hours) ==="
-          # Limit parallel jobs to avoid OOM
-          ninja -j 2 clickhouse-server clickhouse-client clickhouse-local
-          
-          echo "=== Collecting binaries ==="
-          cp programs/clickhouse-server /build/output/
-          cp programs/clickhouse-client /build/output/
-          cp programs/clickhouse-local /build/output/
-          
-          echo "=== Verifying binaries ==="
-          file /build/output/clickhouse-server
-          /build/output/clickhouse-server --version
-          
-          echo "=== Creating archive ==="
-          cd /build/output
-          tar -czvf clickhouse-24.3-kunpeng920-${COMPAT_MODE}.tar.gz clickhouse-*
-          
-          echo "=== Build complete! ==="
-          ls -lh clickhouse-24.3-kunpeng920-${COMPAT_MODE}.tar.gz
-          EOF
-          
-          chmod +x build.sh
-
-      - name: Build ClickHouse in ARM64 container
+          echo "Packaging source code with submodules..."
+          tar -czf /tmp/clickhouse-source.tar.gz \
+            --exclude='.git' \
+            --exclude='build' \
+            .
+          ls -lh /tmp/clickhouse-source.tar.gz
+      
+      - name: Build in ARM64 container
         run: |
-          docker run --rm \
-            --platform linux/arm64 \
-            -v $PWD:/build/ClickHouse \
-            -v $PWD/build.sh:/build/build.sh \
+          docker run --rm --platform linux/arm64 \
+            -v /tmp/clickhouse-source.tar.gz:/src.tar.gz:ro \
+            -v $PWD:/output \
             -e BUILD_TYPE=${{ github.event.inputs.build_type }} \
             -e COMPAT_MODE=${{ github.event.inputs.compatibility_mode }} \
-            -w /build \
-            ubuntu:22.04 \
-            bash /build/build.sh
-
+            -e CLICKHOUSE_VERSION=${{ github.event.inputs.clickhouse_version }} \
+            ubuntu:22.04 bash -c '
+          set -e
+          
+          echo "========================================="
+          echo "ClickHouse Build for Kunpeng920"
+          echo "Version: $CLICKHOUSE_VERSION"
+          echo "Build Type: $BUILD_TYPE"  
+          echo "Compatibility: $COMPAT_MODE"
+          echo "========================================="
+          
+          echo "=== Installing dependencies ==="
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+              cmake ninja-build gcc g++ python3 \
+              libssl-dev zlib1g-dev libicu-dev libreadline-dev \
+              ccache
+          
+          echo "=== Extracting source ==="
+          mkdir -p /build
+          cd /build
+          tar -xzf /src.tar.gz
+          
+          echo "=== Configuring CMake ==="
+          mkdir build && cd build
+          
+          if [ "$COMPAT_MODE" = "safe" ]; then
+            echo "Using SAFE mode (ARMv8.0-A)"
+            cmake .. \
+              -DCMAKE_BUILD_TYPE=$BUILD_TYPE \
+              -DCMAKE_C_COMPILER=gcc \
+              -DCMAKE_CXX_COMPILER=g++ \
+              -DENABLE_CLICKHOUSE_ALL=OFF \
+              -DENABLE_CLICKHOUSE_SERVER=ON \
+              -DENABLE_CLICKHOUSE_CLIENT=ON \
+              -DENABLE_CLICKHOUSE_LOCAL=ON \
+              -DARCH_NATIVE=OFF \
+              -DNO_ARMV81_OR_HIGHER=1 \
+              -DCOMPILER_FLAGS="-march=armv8-a -mtune=generic" \
+              -DENABLE_MULTITARGET_CODE=OFF \
+              -DUSE_INTERNAL_SSL_LIBRARY=ON \
+              -DUSE_STATIC_LIBRARIES=ON \
+              -GNinja
+          else
+            echo "Using OPTIMIZED mode (ARMv8.2-A)"
+            cmake .. \
+              -DCMAKE_BUILD_TYPE=$BUILD_TYPE \
+              -DCMAKE_C_COMPILER=gcc \
+              -DCMAKE_CXX_COMPILER=g++ \
+              -DENABLE_CLICKHOUSE_ALL=OFF \
+              -DENABLE_CLICKHOUSE_SERVER=ON \
+              -DENABLE_CLICKHOUSE_CLIENT=ON \
+              -DENABLE_CLICKHOUSE_LOCAL=ON \
+              -DARCH_NATIVE=OFF \
+              -DARM_MARCH="armv8.2-a" \
+              -DCOMPILER_FLAGS="-march=armv8.2-a -mtune=tsv110" \
+              -DUSE_INTERNAL_SSL_LIBRARY=ON \
+              -DUSE_STATIC_LIBRARIES=ON \
+              -GNinja
+          fi
+          
+          echo "=== Building (1-2 hours) ==="
+          echo "Started: $(date)"
+          ninja -j 2 clickhouse-server clickhouse-client clickhouse-local
+          echo "Finished: $(date)"
+          
+          echo "=== Verifying ==="
+          file programs/clickhouse-server
+          programs/clickhouse-server --version
+          
+          echo "=== Packaging ==="
+          cd programs
+          ARCHIVE="clickhouse-${CLICKHOUSE_VERSION}-kunpeng920-${COMPAT_MODE}.tar.gz"
+          tar -czf "$ARCHIVE" clickhouse-server clickhouse-client clickhouse-local
+          
+          echo "=== SUCCESS ==="
+          ls -lh "$ARCHIVE"
+          sha256sum "$ARCHIVE"
+          
+          cp "$ARCHIVE" /output/
+          '
+      
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: clickhouse-kunpeng920-${{ github.event.inputs.compatibility_mode }}
-          path: build/output/clickhouse-24.3-kunpeng920-*.tar.gz
+          name: clickhouse-${{ github.event.inputs.clickhouse_version }}-kunpeng920-${{ github.event.inputs.compatibility_mode }}
+          path: clickhouse-*.tar.gz
           retention-days: 30
-
-      - name: Create Release (optional)
-        if: github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: kunpeng920-${{ github.event.inputs.clickhouse_version }}-${{ github.event.inputs.compatibility_mode }}
-          name: ClickHouse ${{ github.event.inputs.clickhouse_version }} for Kunpeng920
-          body: |
-            ClickHouse ${{ github.event.inputs.clickhouse_version }} compiled for Kunpeng920
-            
-            **Build Configuration:**
-            - Compatibility Mode: ${{ github.event.inputs.compatibility_mode }}
-            - Build Type: ${{ github.event.inputs.build_type }}
-            - Target: ARMv8-A (safe mode) or ARMv8.2-A (optimized mode)
-            
-            **Installation:**
-            ```bash
-            tar -xzvf clickhouse-24.3-kunpeng920-${{ github.event.inputs.compatibility_mode }}.tar.gz
-            sudo cp clickhouse-server /usr/bin/
-            sudo cp clickhouse-client /usr/bin/
-            sudo cp clickhouse-local /usr/bin/
-            sudo chmod +x /usr/bin/clickhouse-*
-            clickhouse-server --version
-            ```
-          files: build/output/clickhouse-24.3-kunpeng920-*.tar.gz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
