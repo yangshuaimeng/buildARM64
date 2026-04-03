@@ -91,9 +91,14 @@ jobs:
           echo "=== Installing dependencies ==="
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-              cmake ninja-build gcc g++ python3 \
+              cmake ninja-build clang-15 lld-15 python3 \
               libssl-dev zlib1g-dev libicu-dev libreadline-dev \
               ccache
+          
+          # Set Clang as default compiler
+          update-alternatives --install /usr/bin/clang clang /usr/bin/clang-15 100
+          update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-15 100
+          update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-15 100
           
           echo "=== Extracting source ==="
           mkdir -p /build
@@ -107,8 +112,8 @@ jobs:
             echo "Using SAFE mode (ARMv8.0-A)"
             cmake .. \
               -DCMAKE_BUILD_TYPE=$BUILD_TYPE \
-              -DCMAKE_C_COMPILER=gcc \
-              -DCMAKE_CXX_COMPILER=g++ \
+              -DCMAKE_C_COMPILER=clang-15 \
+              -DCMAKE_CXX_COMPILER=clang++-15 \
               -DENABLE_CLICKHOUSE_ALL=OFF \
               -DENABLE_CLICKHOUSE_SERVER=ON \
               -DENABLE_CLICKHOUSE_CLIENT=ON \
@@ -124,8 +129,8 @@ jobs:
             echo "Using OPTIMIZED mode (ARMv8.2-A)"
             cmake .. \
               -DCMAKE_BUILD_TYPE=$BUILD_TYPE \
-              -DCMAKE_C_COMPILER=gcc \
-              -DCMAKE_CXX_COMPILER=g++ \
+              -DCMAKE_C_COMPILER=clang-15 \
+              -DCMAKE_CXX_COMPILER=clang++-15 \
               -DENABLE_CLICKHOUSE_ALL=OFF \
               -DENABLE_CLICKHOUSE_SERVER=ON \
               -DENABLE_CLICKHOUSE_CLIENT=ON \
