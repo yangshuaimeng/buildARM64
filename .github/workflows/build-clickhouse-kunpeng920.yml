@@ -37,11 +37,25 @@ jobs:
 
       - name: Add Swap Space
         run: |
-          # 增加 12GB Swap 空间，防止链接时内存溢出
-          sudo fallocate -l 12G /swapfile
+          # 1. 如果交换分区正在运行，先关闭它
+          if [ -f /swapfile ]; then
+            sudo swapoff /swapfile || true
+            sudo rm -f /swapfile
+          fi
+
+          # 2. 创建 12GB 的交换空间
+          # 某些文件系统下 fallocate 可能会有问题，dd 更稳健但慢一点点
+          # 这里优先尝试 fallocate
+          sudo fallocate -l 12G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=12288
+          
+          # 3. 设置权限
           sudo chmod 600 /swapfile
+          
+          # 4. 格式化并挂载
           sudo mkswap /swapfile
           sudo swapon /swapfile
+          
+          # 5. 查看结果
           free -h
 
       - name: Set up QEMU
